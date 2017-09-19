@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -15,12 +16,127 @@
 #define MAXDATASIZE 100 // max number of bytes we can get at once 
 #define BACKLOG 10     // how many pending connections queue will hold
 
-void ftplist(int new_fd)
+void writetofile(char *buf, char *filename)
 {
+    // remove $end$ from buf
+    char *endptr;
+    endptr = strstr(buf, "$end$");
+    if(endptr != NULL)
+        *endptr='\0';
+
+    // write buf to file
+    FILE *fp;
+
+    fp = fopen(filename, "w");
+
+    if(fp == NULL)
+        printf("Could not open file for writing.\n");
+    else
+    {
+        // write to file
+        fprintf(fp, "%s", buf);
+    }
+    // close file
+    fclose(fp);
 }
 
-void ftpcommand(int new_fd, char **argv)
+void ftpput(int new_fd, char *filename)
 {
+    char bufr[MAXDATASIZE];
+    // wait for file until server closes connection
+    bzero(bufr, MAXDATASIZE);
+    int numbytes = 1;
+    while(numbytes != 0) {
+        if ((numbytes=recv(new_fd, bufr, MAXDATASIZE-1, 0)) == -1) {
+            perror("cli-recv: ");
+            exit(1);
+        }
+        bufr[numbytes] = '\0';
+        /*printf("bif:%s", bufr);*/
+        flush
+        if(strstr(bufr, "$end$") != NULL) {
+            printf("%s",bufr);
+
+            // write to file
+            writetofile(bufr, filename);
+
+            break; // file recieve complete
+        }
+        /*else*/
+            /*printf("%s",bufr);*/
+        /*flush*/
+    }
+    printf("\nFile recieved.\n");
+}
+
+void ftpget(int new_fd, char *filename)
+{
+    printf("Client asked for file %s\n", filename);
+    FILE* fd = NULL;
+	char data[MAXDATASIZE];
+		
+	fd = fopen(filename, "r");
+	
+	if (fd == NULL) {	
+        // send file not foud // error file open
+        printf("While client asked for was not found on the server.\n");
+        strcpy(data, "File not found\n");
+        if (send(new_fd, data, strlen(data), 0) < 0)
+            perror("serv-error sending file not found\n");
+
+	} else {	
+        printf("Beginning file sending\n"); 
+        // send file line by line
+        while(fgets(data, MAXDATASIZE, fd) != NULL) {
+            if (send(new_fd, data, strlen(data), 0) < 0)
+                perror("error sending file\n");
+        }
+        fclose(fd);
+        printf("File sending complete\n");
+        flush
+	}
+    // send end of file to client
+    strcpy(data, "$end$");
+    if (send(new_fd, data, strlen(data), 0) < 0)
+        perror("error sending file\n");
+}
+
+void ftplist(int new_fd)
+{
+    char data[MAXDATASIZE];
+	size_t num_read;									
+	FILE* fd;
+
+    printf("listing files\n");
+    flush
+	int rs = system("ls > /tmp/ftptmpls.txt");
+	if ( rs < 0) {
+		exit(1);
+	}
+	
+	fd = fopen("/tmp/ftptmpls.txt", "r");	
+	if (!fd) {
+		exit(1);
+	}
+
+	// Seek to the beginning of the file
+	fseek(fd, SEEK_SET, 0);
+
+	memset(data, 0, MAXDATASIZE);
+	while ((num_read = fread(data, 1, MAXDATASIZE, fd)) > 0) {
+		if (send(new_fd, data, num_read, 0) < 0) {
+			perror("serv-send: ");
+		}
+		memset(data, 0, MAXDATASIZE);
+	}
+
+	fclose(fd);
+    printf("listing complete\n");
+}
+
+int ftpcommand(int new_fd, char **argv)
+{
+    int result = 0;
     /*printf("argv[0]: %s\n", argv[0]);*/
 
     // select commands
@@ -29,22 +145,33 @@ void ftpcommand(int new_fd, char **argv)
     }
     else if(strcmp(argv[0], "ls") == 0) {
         fputs("list files\n", stdout);
+        ftplist(new_fd);
     }
     else if(strcmp(argv[0], "get") == 0) {
         fputs("send file\n", stdout);
+        ftpget(new_fd, argv[1]);
     }
     else if(strcmp(argv[0], "put") == 0) {
         fputs("receive file\n", stdout);
+        ftpput(new_fd, argv[1]);
+    }
+    else if(strcmp(argv[0], "exit") == 0 || strcmp(argv[0], "quit") == 0) {
+        fputs("exit recieved\n", stdout);
+        result = 1;
+        return result;
     }
     else {
         fputs("invalid command\n", stdout);
     }
     flush
+
+    return result;
 }
 
 void ftpserv(int new_fd, struct sockaddr_in their_addr)
 {
     char buf[MAXDATASIZE];
+    int result;
     int numbytes;
     while(1) {
         memset(buf, 0, sizeof(buf));
@@ -85,9 +212,12 @@ void ftpserv(int new_fd, struct sockaddr_in their_addr)
                 printf("wrong number of arguments recieved.\n");
             }
             else
-                ftpcommand(new_fd, res); 
-                
+                result = ftpcommand(new_fd, res); 
+
             }
+        // quit server
+        if(result == 1)
+            break;
     }
 }
 
@@ -152,6 +282,7 @@ int main(int argc, char *argv[])
                 perror("serv-send: ");
             ftpserv(new_fd, their_addr);
             close(new_fd);
+            printf("Closing connection @ localhost:%d.\n", port);
             exit(0);
         }
         if(pid > 0)
